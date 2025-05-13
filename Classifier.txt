@@ -1,0 +1,147 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from keras.layers import Input, Conv2D, MaxPooling2D, UpSampling2D, Flatten, Dense, Dropout
+from keras.models import Model
+from keras.optimizers import Adam
+from tensorflow.keras.preprocessing.image import ImageDataGenerator 
+import tensorflow as tf
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
+
+def generate_hst_isar():
+    # Simulate HST scatterers (main body, solar panels, antenna)
+    main_body = np.random.normal(0, 0.5, (10, 2))  # Cluster around center
+    solar_panels = np.vstack([
+        np.random.uniform(-4, -2, (5, 2)),  # Left panel
+        np.random.uniform(2, 4, (5, 2))     # Right panel
+    ])
+    antenna = np.random.normal(0, 0.2, (3, 2)) + [0, 1.5]  # Above center
+    scatterers = np.vstack([main_body, solar_panels, antenna])
+    reflectivity = np.concatenate([
+        np.random.uniform(0.8, 1.0, 10),  # Main body (high RCS)
+        np.random.uniform(0.5, 0.7, 10),  # Solar panels
+        np.random.uniform(0.9, 1.0, 3)    # Antenna
+    ])
+    
+    # Create ISAR image (simplified)
+    image = np.zeros((128, 128))
+    for (x, y), r in zip(scatterers, reflectivity):
+        xi, yi = int(64 + x * 10), int(64 + y * 10)  # Scale to image coords
+        if 0 <= xi < 128 and 0 <= yi < 128:
+            image[yi, xi] = r
+    return image
+
+def generate_debris_isar():
+    # Random scatterers with low reflectivity
+    scatterers = np.random.uniform(-5, 5, (20, 2))
+    reflectivity = np.random.uniform(0.1, 0.4, 20)
+    
+    # Create ISAR image
+    image = np.zeros((128, 128))
+    for (x, y), r in zip(scatterers, reflectivity):
+        xi, yi = int(64 + x * 10), int(64 + y * 10)
+        if 0 <= xi < 128 and 0 <= yi < 128:
+            image[yi, xi] = r
+    return image
+
+# Generate 2000 samples (1000 satellites, 1000 debris)
+satellite_images = np.array([generate_hst_isar() for _ in range(1000)])
+debris_images = np.array([generate_debris_isar() for _ in range(1000)])
+
+# Combine and label data
+X = np.vstack([satellite_images, debris_images]).reshape(-1, 128, 128, 1)
+y = np.array([1] * 1000 + [0] * 1000)  # 1=Satellite, 0=Debris
+
+# Split into train/test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+input_img = Input(shape=(128, 128, 1))
+
+# Encoder
+x = Conv2D(32, (3, 3), activation='relu', padding='same')(input_img)
+x = MaxPooling2D((2, 2))(x)
+x = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+encoded = MaxPooling2D((2, 2))(x)
+
+# Decoder
+x = Conv2D(64, (3, 3), activation='relu', padding='same')(encoded)
+x = UpSampling2D((2, 2))(x)
+x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+x = UpSampling2D((2, 2))(x)
+decoded = Conv2D(1, (3, 3), activation='sigmoid', padding='same')(x)
+
+autoencoder = Model(input_img, decoded)
+autoencoder.compile(optimizer=Adam(0.001), loss='mse')
+
+autoencoder.fit(
+    X_train, X_train,  # Input=Target for reconstruction
+    epochs=20,
+    batch_size=32,
+    validation_data=(X_test, X_test)
+)
+
+encoder = Model(input_img, encoded)
+X_train_features = encoder.predict(X_train)
+X_test_features = encoder.predict(X_test)
+
+clf_input = Input(shape=X_train_features.shape[1:])
+x = Flatten()(clf_input)
+x = Dense(128, activation='relu')(x)
+x = Dropout(0.5)(x)
+output = Dense(1, activation='sigmoid')(x)
+
+classifier = Model(clf_input, output)
+classifier.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
+
+history = classifier.fit(
+    X_train_features, y_train,
+    epochs=15,
+    batch_size=32,
+    validation_data=(X_test_features, y_test)
+)
+
+y_pred = (classifier.predict(X_test_features) > 0.5).astype(int)
+print(classification_report(y_test, y_pred, target_names=['Debris', 'Satellite']))
+
+cm = confusion_matrix(y_test, y_pred)
+plt.imshow(cm, cmap='Blues')
+plt.colorbar()
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.xticks([0, 1], ['Debris', 'Satellite'])
+plt.yticks([0, 1], ['Debris', 'Satellite'])
+plt.title('Confusion Matrix')
+plt.show()
+
+fpr, tpr, _ = roc_curve(y_test, classifier.predict(X_test_features))
+roc_auc = auc(fpr, tpr)
+
+plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.2f}')
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.legend()
+plt.show()
+
+def classify_isar(image):
+    # Preprocess (add batch dimension)
+    image = image.reshape(1, 128, 128, 1)
+    
+    # Extract features
+    features = encoder.predict(image)
+    
+    # Classify
+    prob = classifier.predict(features)[0][0]
+    label = 'Satellite' if prob > 0.5 else 'Debris'
+    
+    return label, prob
+
+# Example usage
+test_image = generate_hst_isar().reshape(128, 128, 1)
+label, prob = classify_isar(test_image)
+print(f"Predicted: {label} (Confidence: {prob:.2f})")

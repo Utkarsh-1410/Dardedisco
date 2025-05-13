@@ -1,0 +1,322 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from keras.layers import Input, Conv2D, MaxPooling2D, UpSampling2D, Flatten, Dense, Dropout
+from keras.models import Model
+from keras.optimizers import Adam
+from tensorflow.keras.preprocessing.image import ImageDataGenerator 
+import tensorflow as tf
+import random
+import os
+
+# =============================================
+# COMPREHENSIVE RANDOM SEED SETTING
+# =============================================
+# Set all possible random seeds for full reproducibility
+SEED = 42
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+tf.keras.utils.set_random_seed(SEED)
+tf.config.experimental.enable_op_determinism()
+
+# =============================================
+# ENHANCED ISAR GENERATION WITH MORE DETAILS
+# =============================================
+def generate_hst_isar():
+    """Generate HST-like satellite ISAR image with more realistic features"""
+    # Main body (cylinder)
+    main_body = np.random.normal(0, 0.3, (15, 2))  # Tighter cluster
+    
+    # Solar panels (more structured)
+    left_panel = np.column_stack([
+        np.random.uniform(-4, -2.5, 8),
+        np.random.uniform(-1, 1, 8)
+    ])
+    right_panel = np.column_stack([
+        np.random.uniform(2.5, 4, 8),
+        np.random.uniform(-1, 1, 8)
+    ])
+    
+    # Antenna and instruments
+    antenna = np.random.normal([0, 1.8], 0.1, (4, 2))
+    instruments = np.random.uniform([-0.5, -1.5], [0.5, -2], (5, 2))
+    
+    scatterers = np.vstack([main_body, left_panel, right_panel, antenna, instruments])
+    reflectivity = np.concatenate([
+        np.random.uniform(0.9, 1.0, 15),  # Main body
+        np.random.uniform(0.6, 0.8, 16),  # Solar panels
+        np.random.uniform(0.9, 1.0, 4),    # Antenna
+        np.random.uniform(0.7, 0.9, 5)     # Instruments
+    ])
+    
+    # Create ISAR image with Gaussian spread
+    image = np.zeros((128, 128))
+    for (x, y), r in zip(scatterers, reflectivity):
+        xi, yi = int(64 + x * 10), int(64 + y * 10)
+        if 0 <= xi < 128 and 0 <= yi < 128:
+            # Add Gaussian point spread
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    xx, yy = xi + dx, yi + dy
+                    if 0 <= xx < 128 and 0 <= yy < 128:
+                        image[yy, xx] += r * np.exp(-(dx**2 + dy**2)/2)
+    return np.clip(image, 0, 1)
+
+def generate_debris_isar():
+    """Generate debris ISAR image with more realistic random patterns"""
+    # Three clusters of debris
+    cluster1 = np.random.normal([-3, 0], 1.5, (10, 2))
+    cluster2 = np.random.normal([2, 1], 1.0, (7, 2))
+    cluster3 = np.random.normal([0, -2], 2.0, (8, 2))
+    
+    scatterers = np.vstack([cluster1, cluster2, cluster3])
+    reflectivity = np.random.uniform(0.1, 0.5, 25)
+    
+    # Create ISAR image
+    image = np.zeros((128, 128))
+    for (x, y), r in zip(scatterers, reflectivity):
+        xi, yi = int(64 + x * 10), int(64 + y * 10)
+        if 0 <= xi < 128 and 0 <= yi < 128:
+            image[yi, xi] = r
+            # Add some random scattering
+            if random.random() > 0.7:
+                for _ in range(2):
+                    dx, dy = random.randint(-2,2), random.randint(-2,2)
+                    if 0 <= xi+dx < 128 and 0 <= yi+dy < 128:
+                        image[yi+dy, xi+dx] = r * 0.3
+    return image
+
+# =============================================
+# DATA GENERATION WITH VISUALIZATION
+# =============================================
+print("Generating dataset with fixed random seeds...")
+
+# Generate 2000 samples (1000 satellites, 1000 debris)
+satellite_images = np.array([generate_hst_isar() for _ in range(1000)])
+debris_images = np.array([generate_debris_isar() for _ in range(1000)])
+
+# Combine and label data
+X = np.vstack([satellite_images, debris_images]).reshape(-1, 128, 128, 1)
+y = np.array([1] * 1000 + [0] * 1000)  # 1=Satellite, 0=Debris
+
+# Split into train/test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=SEED)
+
+# Enhanced visualization
+plt.figure(figsize=(12, 8))
+
+# Sample satellite images
+for i in range(3):
+    plt.subplot(2, 3, i+1)
+    plt.imshow(X_train[y_train == 1][i].reshape(128, 128), cmap='hot')
+    plt.title(f'Satellite Sample {i+1}')
+    plt.axis('off')
+
+# Sample debris images
+for i in range(3):
+    plt.subplot(2, 3, i+4)
+    plt.imshow(X_train[y_train == 0][i].reshape(128, 128), cmap='hot')
+    plt.title(f'Debris Sample {i+1}')
+    plt.axis('off')
+
+plt.suptitle('ISAR Training Samples (Top: Satellites, Bottom: Debris)')
+plt.tight_layout()
+plt.show()
+
+# =============================================
+# MODEL DEFINITION WITH FIXED INITIALIZATION
+# =============================================
+print("Building model with fixed initialization...")
+
+input_img = Input(shape=(128, 128, 1))
+
+# Encoder with fixed kernel initialization
+x = Conv2D(32, (3, 3), activation='relu', padding='same', 
+           kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED))(input_img)
+x = MaxPooling2D((2, 2))(x)
+x = Conv2D(64, (3, 3), activation='relu', padding='same',
+          kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED+1))(x)
+encoded = MaxPooling2D((2, 2))(x)
+
+# Decoder
+x = Conv2D(64, (3, 3), activation='relu', padding='same',
+          kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED+2))(encoded)
+x = UpSampling2D((2, 2))(x)
+x = Conv2D(32, (3, 3), activation='relu', padding='same',
+          kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED+3))(x)
+x = UpSampling2D((2, 2))(x)
+decoded = Conv2D(1, (3, 3), activation='sigmoid', padding='same',
+                kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED+4))(x)
+
+autoencoder = Model(input_img, decoded)
+autoencoder.compile(optimizer=Adam(0.001), loss='mse')
+
+# =============================================
+# TRAINING WITH FIXED BATCH SHUFFLING
+# =============================================
+print("Training autoencoder...")
+history = autoencoder.fit(
+    X_train, X_train,
+    epochs=20,
+    batch_size=32,
+    shuffle=True,  # Will use the SEED for shuffling
+    validation_data=(X_test, X_test),
+    verbose=1
+)
+
+# Plot training history
+plt.figure(figsize=(10, 4))
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Autoencoder Training History')
+plt.xlabel('Epoch')
+plt.ylabel('MSE Loss')
+plt.legend()
+plt.show()
+
+# =============================================
+# CLASSIFIER TRAINING
+# =============================================
+print("Training classifier...")
+
+# Feature extraction
+encoder = Model(input_img, encoded)
+X_train_features = encoder.predict(X_train, batch_size=32)
+X_test_features = encoder.predict(X_test, batch_size=32)
+
+# Classifier model with fixed initialization
+clf_input = Input(shape=X_train_features.shape[1:])
+x = Flatten()(clf_input)
+x = Dense(128, activation='relu', 
+          kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED+5))(x)
+x = Dropout(0.5, seed=SEED)(x)
+output = Dense(1, activation='sigmoid',
+              kernel_initializer=tf.keras.initializers.GlorotUniform(seed=SEED+6))(x)
+
+classifier = Model(clf_input, output)
+classifier.compile(optimizer=Adam(0.001), 
+                  loss='binary_crossentropy', 
+                  metrics=['accuracy'])
+
+# Train classifier
+history = classifier.fit(
+    X_train_features, y_train,
+    epochs=15,
+    batch_size=32,
+    shuffle=True,
+    validation_data=(X_test_features, y_test),
+    verbose=1
+)
+
+# Plot training history
+plt.figure(figsize=(10, 4))
+plt.plot(history.history['accuracy'], label='Training Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.title('Classifier Training History')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+
+# =============================================
+# EVALUATION WITH VISUALIZATION
+# =============================================
+# Predictions
+y_pred = (classifier.predict(X_test_features) > 0.5).astype(int)
+
+# Classification report
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=['Debris', 'Satellite']))
+
+# Confusion matrix
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(6, 6))
+plt.imshow(cm, cmap='Blues')
+for i in range(2):
+    for j in range(2):
+        plt.text(j, i, f"{cm[i,j]}", ha='center', va='center', color='black')
+plt.colorbar()
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.xticks([0, 1], ['Debris', 'Satellite'])
+plt.yticks([0, 1], ['Debris', 'Satellite'])
+plt.title('Confusion Matrix')
+plt.show()
+
+# ROC curve
+fpr, tpr, _ = roc_curve(y_test, classifier.predict(X_test_features))
+roc_auc = auc(fpr, tpr)
+
+plt.figure(figsize=(6, 6))
+plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.3f}')
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.legend()
+plt.show()
+
+# =============================================
+# ENHANCED TESTING WITH VISUALIZATION
+# =============================================
+def classify_isar(image, show_processed=False):
+    """Classify ISAR image with optional intermediate visualization"""
+    original_image = image.copy()
+    image = image.reshape(1, 128, 128, 1)
+    
+    if show_processed:
+        # Show original image
+        plt.figure(figsize=(12, 4))
+        plt.subplot(1, 3, 1)
+        plt.imshow(original_image.reshape(128, 128), cmap='hot')
+        plt.title('Original Image')
+        plt.axis('off')
+        
+        # Show encoded features
+        features = encoder.predict(image)
+        plt.subplot(1, 3, 2)
+        plt.imshow(features[0, :, :, 0], cmap='hot')
+        plt.title('Encoded Features')
+        plt.axis('off')
+    
+    # Classify
+    features = encoder.predict(image)
+    prob = classifier.predict(features)[0][0]
+    label = 'Satellite' if prob > 0.5 else 'Debris'
+    
+    if show_processed:
+        # Show classification result
+        plt.subplot(1, 3, 3)
+        plt.imshow(original_image.reshape(128, 128), cmap='hot')
+        plt.title(f'Predicted: {label}\nConfidence: {prob:.2f}')
+        plt.axis('off')
+        plt.tight_layout()
+        plt.show()
+    
+    return label, prob
+
+print("\nTesting on sample images:")
+# Test on known samples
+for i in range(3):
+    # Satellite test
+    img = X_test[y_test == 1][i]
+    label, prob = classify_isar(img, show_processed=True)
+    print(f"Satellite Test {i+1}: {label} (confidence: {prob:.2f})")
+    
+    # Debris test
+    img = X_test[y_test == 0][i]
+    label, prob = classify_isar(img, show_processed=True)
+    print(f"Debris Test {i+1}: {label} (confidence: {prob:.2f})")
+
+# Test on new generated samples
+print("\nTesting on newly generated samples:")
+new_satellite = generate_hst_isar()
+label, prob = classify_isar(new_satellite, show_processed=True)
+print(f"New Satellite: {label} (confidence: {prob:.2f})")
+
+new_debris = generate_debris_isar()
+label, prob = classify_isar(new_debris, show_processed=True)
+print(f"New Debris: {label} (confidence: {prob:.2f})")
