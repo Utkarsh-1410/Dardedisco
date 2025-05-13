@@ -118,3 +118,13 @@ def simulate_full_ajisai():
 
 # Run the simulation
 simulate_full_ajisai()
+
+
+Open a Terminal: On the offline machine, open a terminal or command prompt. 
+Install TensorFlow: Use pip to install the TensorFlow .whl file, specifying the --no-index and --find-links flags. 
+pip install --no-index --find-links <path_to_downloaded_files> tensorflow-version.whl 
+<path_to_downloaded_files> is the path to the directory where you have the downloaded packages. 
+tensorflow-version.whl is the name of the downloaded TensorFlow .whl file. 
+Install Dependencies (if needed): If you used pip download, you might have downloaded dependencies. You can install them individually using pip install <package_name.whl>. 
+Verify Installation: Check that TensorFlow is installed correctly using pip show tensorflow. 
+Important Considerations
